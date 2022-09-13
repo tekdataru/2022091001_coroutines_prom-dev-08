@@ -6,10 +6,12 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.logging.HttpLoggingInterceptor
+import ru.netology.coroutines.dto.Author
 import ru.netology.coroutines.dto.Comment
 import ru.netology.coroutines.dto.Post
 import ru.netology.coroutines.dto.PostWithComments
 import java.io.IOException
+import java.sql.DriverManager
 import java.sql.DriverManager.println
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.EmptyCoroutineContext
@@ -195,13 +197,13 @@ private val client = OkHttpClient.Builder()
     .connectTimeout(30, TimeUnit.SECONDS)
     .addInterceptor(HttpLoggingInterceptor().apply{
         level = HttpLoggingInterceptor.Level.BODY
-    })
+    }).build()
 
 private val gson = Gson()
 private const val BASE_URL = "http://127.0.0.1:9999"
 
 
-suspend fun <T> makeCall(url: String, typeToken: TypeToken<T>): T {
+/*suspend fun <T> makeCall(url: String, typeToken: TypeToken<T>): T =
     suspendCoroutine { continuation ->
         Request.Builder()
             .url(url)
@@ -220,8 +222,20 @@ suspend fun <T> makeCall(url: String, typeToken: TypeToken<T>): T {
                     continuation.resumeWithException(e)
                 }
             })
+    }*/
+
+suspend fun <T> makeCall(url: String, typeToken: TypeToken<T>): T =
+    withContext(Dispatchers.IO) {
+        Request.Builder()
+            .url(url)
+            .build()
+            .let(client::newCall)
+            .execute()
+            .let { response ->
+                gson.fromJson(response.body?.string(), typeToken.type)
+            }
     }
-}
+
 
 suspend fun getPosts(): List<Post> =
     makeCall("$BASE_URL/api/slow/posts", object : TypeToken<List<Post>>() {})
@@ -229,14 +243,47 @@ suspend fun getPosts(): List<Post> =
 suspend fun getComments(postId: Long): List<Comment> =
     makeCall("$BASE_URL/api/slow/posts/$postId/comments/", object : TypeToken<List<Comment>>() {})
 
+suspend fun getAuthor(id: Long): Author =
+    makeCall("$BASE_URL/api/slow/authors/$id", object : TypeToken<Author>() {})
+
 fun main() {
-    runBlocking {
-        val posts = getPosts()
+    //runBlocking+ выполняется последовательно
+//    runBlocking {
+//        val posts = getPosts()
+//
+//        val result = posts.map{
+//            PostWithComments(it, getComments(it.id))
+//        }
+//
+//        println(result)
+//    }
+    //runBlocking-
 
-        val result = posts.map{
-            PostWithComments(it, getComments(it.id))
+    with(CoroutineScope(EmptyCoroutineContext)){
+        launch {
+            try {
+                val posts = getPosts()
+                    .map {post ->
+                        async {
+                            val author = async { getAuthor(post.authorId) }
+                            val comments = async { getComments(post.id) }
+                            PostWithComments(post, comments.await(), author.await())
+                        }
+                    }.awaitAll()
+                //println(posts)
+                posts.map{post ->
+
+                    println(post.author)
+                    println(post.post)
+                    println(post.comments)
+
+                }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
-
-        println(result)
     }
+
+    Thread.sleep(30_000L)
 }
